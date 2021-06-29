@@ -1,4 +1,4 @@
-;;; ctags-update.el --- (auto) update TAGS in parent directory using exuberant-ctags
+;;; ctags-update.el --- (auto) update TAGS in parent directory using exuberant-ctags -*- lexical-binding: t; -*-
 
 ;; Created: 2011-10-16 13:17
 ;; Version: 1.0
@@ -56,6 +56,7 @@
 ;;; Code:
 
 (require 'etags)
+(require 'project)
 
 (defgroup ctags-update nil
   "auto update TAGS in parent directory using `exuberant-ctags'"
@@ -76,19 +77,139 @@ then `ctags-update' will be called"
   :type 'integer
   :group 'ctags-update)
 
+(defcustom ctags-update-tags-file-name "TAGS"
+  "Tags file name."
+  :group 'ctags-update
+  :type 'string)
+
+(defcustom ctags-update-languages
+  '("C"
+    "C++"
+    "Java"
+    "Rust")
+  "The languages for which tag generation is enabled."
+  :group 'ctags-update
+  :type '(repeat string))
+
+(defcustom ctags-update-ignore-config-files
+  '(".gitignore"
+    ".hgignore"
+    "~/.ignore")
+  "Path of configuration file which specifies files that should ignore.
+Path is either absolute path or relative to the tags file."
+  :group 'ctags-update
+  :type '(repeat string))
+
+(defcustom ctags-update-ignore-directories
+  '(;; VCS
+    ".git"
+    ".svn"
+    ".cvs"
+    ".bzr"
+    ".hg"
+    ;; project misc
+    "bin"
+    "fonts"
+    "images"
+    ;; Mac
+    ".DS_Store"
+    ;; html/javascript/css
+    ".npm"
+    ".tmp" ; TypeScript
+    ".sass-cache" ; SCSS/SASS
+    ".idea"
+    "node_modules"
+    "bower_components"
+    ;; python
+    ".tox"
+    ;; vscode
+    ".vscode"
+    ;; emacs
+    ".cask")
+  "Ignore directory names."
+  :group 'ctags-update
+  :type '(repeat 'string))
+
+(defcustom ctags-update-ignore-filenames
+  '(;; VCS
+    ;; project misc
+    "*.log"
+    ;; rusty-tags
+    "rusty-tags.vim"
+    "rusty-tags.emacs"
+    ;; Ctags
+    "tags"
+    "TAGS"
+    ;; compressed
+    "*.tgz"
+    "*.gz"
+    "*.xz"
+    "*.zip"
+    "*.tar"
+    "*.rar"
+    ;; Global/Cscope
+    "GTAGS"
+    "GPATH"
+    "GRTAGS"
+    "cscope.files"
+    ;; html/javascript/css
+    "*bundle.js"
+    "*min.js"
+    "*min.css"
+    ;; Images
+    "*.png"
+    "*.jpg"
+    "*.jpeg"
+    "*.gif"
+    "*.bmp"
+    "*.tiff"
+    "*.ico"
+    ;; documents
+    "*.doc"
+    "*.docx"
+    "*.xls"
+    "*.ppt"
+    "*.pdf"
+    "*.odt"
+    ;; C/C++
+    ".clang-format"
+    "*.obj"
+    "*.so"
+    "*.o"
+    "*.a"
+    "*.ifso"
+    "*.tbd"
+    "*.dylib"
+    "*.lib"
+    "*.d"
+    "*.dll"
+    "*.exe"
+    ;; Java
+    ".metadata*"
+    "*.class"
+    "*.war"
+    "*.jar"
+    ;; Emacs/Vim
+    "*flymake"
+    "#*#"
+    ".#*"
+    "*.swp"
+    "*~"
+    "*.elc"
+    ;; Python
+    "*.pyc")
+  "Ignore file names.  Wildcast is supported."
+  :group 'ctags-update
+  :type '(repeat 'string))
+
+(defcustom ctags-update-project-file '("TAGS" "tags" ".svn" ".hg" ".git")
+  "The file/directory used to locate project root directory.
+You can set up it in \".dir-locals.el\"."
+  :group 'ctags-update
+  :type '(repeat 'string))
+
 (defcustom ctags-update-other-options
-  (list
-   "--fields=+iaSt"
-   "--extra=+q"
-   ;; "−−c++−kinds=+p"
-   "--exclude='*.elc'"
-   "--exclude='*.class'"
-   "--exclude='.git'"
-   "--exclude='.svn'"
-   "--exclude='SCCS'"
-   "--exclude='RCS'"
-   "--exclude='CVS'"
-   "--exclude='EIFGEN'")
+  '()
   "other options for ctags"
   :group 'ctags-update
   :type '(repeat string))
@@ -114,33 +235,54 @@ is enabled."
 
 (defvar  ctags-auto-update-mode-hook nil)
 
-(defvar ctags-update-use-xemacs-etags-p
-  (fboundp 'get-tag-table-buffer)
-  "Use XEmacs etags?")
-
 (defun ctags-update-file-truename (filename &optional counter prev-dirs)
   "empty function")
 
-(if ctags-update-use-xemacs-etags-p
-    (unless (fboundp 'symlink-expand-file-name)
-      (fset 'symlink-expand-file-name 'file-truename)))
 (if (fboundp 'symlink-expand-file-name)
     (fset 'ctags-update-file-truename 'symlink-expand-file-name)
   (fset 'ctags-update-file-truename 'file-truename))
 
+(defun ctags-update-locate-project ()
+  "Return the root of the project."
+  (let* ((tags-dir (if (listp ctags-update-project-file)
+                       (cl-some (apply-partially 'locate-dominating-file
+                                                 default-directory)
+                                ctags-update-project-file)
+                     (locate-dominating-file default-directory
+                                             ctags-update-project-file)))
+         (project-root (or ctags-update-project-root
+                           (and tags-dir (file-name-as-directory tags-dir)))))
+    (or project-root
+        (progn (message ctags-update-no-project-msg)
+               nil))))
 
 (defsubst ctags-update-native-w32-p()
   (and (equal system-type 'windows-nt)
        (not (string-match-p "MINGW" (or (getenv "MSYSTEM") "")))))
+
+(defun ctags-update-dir-pattern (dir)
+  "Trim * from DIR."
+  (setq dir (replace-regexp-in-string "[*/]*\\'" "" dir))
+  (setq dir (replace-regexp-in-string "\\`[*]*" "" dir))
+  dir)
 
 (defun ctags-update-command-args (tagfile-full-path &optional save-tagfile-to-as)
   "`tagfile-full-path' is the full path of TAGS file . when files in or under the same directory
 with `tagfile-full-path' changed ,then TAGS file need to be updated. this function will generate
 the command to update TAGS"
   (append
-   (list "-R" "-e" )
+   (list "-R" )
    (list "-f" (ctags-update-get-system-path (or save-tagfile-to-as tagfile-full-path)))
+   (list (format "--languages=%s" (mapconcat (lambda (l) l) ctags-update-languages ",")))
    ctags-update-other-options
+   (list (mapconcat (lambda (p)
+                      (format "--exclude=\"*/%s/*\" --exclude=\"%s/*\""
+                              (ctags-update-dir-pattern p)
+                              (ctags-update-dir-pattern p)))
+                    ctags-update-ignore-directories " "))
+   (list (mapconcat (lambda (p)
+                      (format "--exclude=\"%s\"" p))
+                    ctags-update-ignore-filenames " "))
    (if (ctags-update-native-w32-p)
        ;; on windows "ctags -R d:/.emacs.d"  works , but "ctags -R d:/.emacs.d/" doesn't
        ;; On Windows, "gtags d:/tmp" work, but "gtags d:/tmp/" doesn't
@@ -160,14 +302,20 @@ to \\ when on windows"
       (convert-standard-filename  file-path)
     file-path))
 
+(defun ctags-update-project-root ()
+  (let ((project-current (project-current)))
+    (when project-current
+      (project-root project-current))))
+
 (defun ctags-update-find-tags-file ()
   "recursively searches each parent directory for a file named 'TAGS' and returns the
 path to that file or nil if a tags file is not found. Returns nil if the buffer is
 not visiting a file"
-  (let ((tag-root-dir (locate-dominating-file default-directory "TAGS")))
-    (if tag-root-dir (expand-file-name "TAGS" tag-root-dir) nil)))
+  (let ((tag-root-dir (locate-dominating-file default-directory ctags-update-tags-file-name)))
+    (when tag-root-dir
+      (expand-file-name ctags-update-tags-file-name tag-root-dir))))
 
-(defsubst ctags-update-check-interval()
+(defsubst ctags-update-should-update-tags()
   (> (- (float-time (current-time))
         ctags-update-last-update-time)
      ctags-update-delay-seconds))
@@ -196,14 +344,15 @@ this return t if current buffer file name is TAGS."
 
 (defun ctags-update-how-to-update(is-interactive)
   "return a tagfile"
-  (let (tags)
+  (let (tags
+        (project-root (ctags-update-project-root)))
     (cond
      ((> (prefix-numeric-value current-prefix-arg) 1)  ;C-u or C-uC-u ,generate new tags in selected directory
-      (setq tags (expand-file-name "TAGS" (read-directory-name "Generate TAGS in dir:"))))
+      (setq tags (expand-file-name ctags-update-tags-file-name (read-directory-name "Generate TAGS in dir:" project-root))))
      (is-interactive
       (setq tags (ctags-update-find-tags-file))
       (unless tags
-        (setq tags (expand-file-name "TAGS" (read-directory-name "Generate TAGS in dir:")))))
+        (setq tags (expand-file-name ctags-update-tags-file-name (read-directory-name "Generate TAGS in dir:" project-root)))))
      (t
       (setq tags (ctags-update-find-tags-file))
       (unless tags
@@ -212,8 +361,8 @@ this return t if current buffer file name is TAGS."
         (when ctags-update-prompt-create-tags
           (setq tags
                 (expand-file-name
-                 "TAGS" (read-directory-name
-                         "Generate TAGS in dir(or disable `ctags-auto-update-mode'):")))
+                 ctags-update-tags-file-name (read-directory-name
+                                              "Generate TAGS in dir(or disable `ctags-auto-update-mode'):")))
           ))))
     tags))
 
@@ -232,7 +381,7 @@ this return t if current buffer file name is TAGS."
         (user-error "Another ctags-update process is already running"))
 
       (when (or (called-interactively-p 'interactive)
-                (and (ctags-update-check-interval) ;updating interval reach
+                (and (ctags-update-should-update-tags) ;updating interval reach
                      (not (ctags-update-triggered-by-tags tags))))
         (setq ctags-update-last-update-time (float-time (current-time)));;update time
         (let ((orig-default-directory default-directory)
