@@ -260,12 +260,6 @@ is enabled."
   (and (equal system-type 'windows-nt)
        (not (string-match-p "MINGW" (or (getenv "MSYSTEM") "")))))
 
-(defun ctags-update-dir-pattern (dir)
-  "Trim * from DIR."
-  (setq dir (replace-regexp-in-string "[*/]*\\'" "" dir))
-  (setq dir (replace-regexp-in-string "\\`[*]*" "" dir))
-  dir)
-
 (defun ctags-update-command-args (tagfile-full-path &optional save-tagfile-to-as)
   "`tagfile-full-path' is the full path of TAGS file . when files in or under the same directory
 with `tagfile-full-path' changed ,then TAGS file need to be updated. this function will generate
@@ -275,14 +269,8 @@ the command to update TAGS"
    (list "-f" (ctags-update-get-system-path (or save-tagfile-to-as tagfile-full-path)))
    (list (format "--languages=%s" (mapconcat (lambda (l) l) ctags-update-languages ",")))
    ctags-update-other-options
-   (list (mapconcat (lambda (p)
-                      (format "--exclude=\"*/%s/*\" --exclude=\"%s/*\""
-                              (ctags-update-dir-pattern p)
-                              (ctags-update-dir-pattern p)))
-                    ctags-update-ignore-directories " "))
-   (list (mapconcat (lambda (p)
-                      (format "--exclude=\"%s\"" p))
-                    ctags-update-ignore-filenames " "))
+   (mapcar (lambda (p) (format "--exclude=%s" p)) ctags-update-ignore-directories)
+   (mapcar (lambda (p) (format "--exclude=%s" p)) ctags-update-ignore-filenames)
    (if (ctags-update-native-w32-p)
        ;; on windows "ctags -R d:/.emacs.d"  works , but "ctags -R d:/.emacs.d/" doesn't
        ;; On Windows, "gtags d:/tmp" work, but "gtags d:/tmp/" doesn't
