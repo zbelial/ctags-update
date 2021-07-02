@@ -225,6 +225,13 @@ is enabled."
   :group 'ctags-update
   :type 'string)
 
+(defcustom ctags-update-project-option-alist '()
+  "Options for some particular projects. "
+  :group 'ctags-update
+  :type '(repeat (cons (string :tag "project root")
+                       (cons (string :tag "ctags option")
+                             (list :tag "ctags option values")))))
+
 (defvar ctags-update-last-update-time
   (- (float-time (current-time)) ctags-update-delay-seconds 1)
   "make sure when user first call `ctags-update' it can run immediately")
@@ -260,23 +267,42 @@ is enabled."
   (and (equal system-type 'windows-nt)
        (not (string-match-p "MINGW" (or (getenv "MSYSTEM") "")))))
 
+(defun ctags-update-project-config (project-root option)
+  (let ((config (assoc-default project-root ctags-update-project-option-alist))
+        values)
+    ;; (message "[ctags-update-project-config] config %s, project-root %s, option %s" config project-root option)
+    (when config
+      (setq values (assoc-default option config))
+      )
+    values
+    )
+  )
+
 (defun ctags-update-command-args (tagfile-full-path &optional save-tagfile-to-as)
   "`tagfile-full-path' is the full path of TAGS file . when files in or under the same directory
 with `tagfile-full-path' changed ,then TAGS file need to be updated. this function will generate
 the command to update TAGS"
-  (append
-   (list "-R" )
-   (list "-f" (ctags-update-get-system-path (or save-tagfile-to-as tagfile-full-path)))
-   (list (format "--languages=%s" (mapconcat (lambda (l) l) ctags-update-languages ",")))
-   ctags-update-other-options
-   (mapcar (lambda (p) (format "--exclude=%s" p)) ctags-update-ignore-directories)
-   (mapcar (lambda (p) (format "--exclude=%s" p)) ctags-update-ignore-filenames)
-   (if (ctags-update-native-w32-p)
-       ;; on windows "ctags -R d:/.emacs.d"  works , but "ctags -R d:/.emacs.d/" doesn't
-       ;; On Windows, "gtags d:/tmp" work, but "gtags d:/tmp/" doesn't
-       (list (directory-file-name
-              (file-name-directory (or save-tagfile-to-as tagfile-full-path ))))
-     (list "."))))
+  (let* ((project-root (file-name-directory tagfile-full-path))
+         (proj-languages (ctags-update-project-config project-root "--languages"))
+         (proj-excludes (ctags-update-project-config project-root "--exclude"))
+         (proj-other-options (ctags-update-project-config project-root "OTHER"))
+         )
+    (append
+     (list "-R" )
+     (list "-f" (ctags-update-get-system-path (or save-tagfile-to-as tagfile-full-path)))
+     (list (format "--languages=%s" (mapconcat (lambda (l) l) (or proj-languages ctags-update-languages) ",")))
+     ctags-update-other-options
+     proj-other-options
+     (mapcar (lambda (p) (format "--exclude=%s" p)) ctags-update-ignore-directories)
+     (mapcar (lambda (p) (format "--exclude=%s" p)) ctags-update-ignore-filenames)
+     (mapcar (lambda (p) (format "--exclude=%s" p)) proj-excludes)
+     (if (ctags-update-native-w32-p)
+         ;; on windows "ctags -R d:/.emacs.d"  works , but "ctags -R d:/.emacs.d/" doesn't
+         ;; On Windows, "gtags d:/tmp" work, but "gtags d:/tmp/" doesn't
+         (list (directory-file-name
+                (file-name-directory (or save-tagfile-to-as tagfile-full-path ))))
+       (list "."))))
+  )
 
 (defun ctags-update-get-command(command command-args)
   "get the full command as string."
