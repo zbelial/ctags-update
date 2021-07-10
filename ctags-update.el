@@ -77,6 +77,12 @@ then `ctags-update' will be called"
   :type 'integer
   :group 'ctags-update)
 
+(defcustom ctags-update-auto-update-idle-duration 30
+  "The number of seconds Emacs has to be idle, before auto-updating tags."
+  :type 'integer
+  :group 'ctags-update
+  )
+
 (defcustom ctags-update-tags-file-name "TAGS"
   "Tags file name."
   :group 'ctags-update
@@ -249,19 +255,6 @@ is enabled."
     (fset 'ctags-update-file-truename 'symlink-expand-file-name)
   (fset 'ctags-update-file-truename 'file-truename))
 
-(defun ctags-update-locate-project ()
-  "Return the root of the project."
-  (let* ((tags-dir (if (listp ctags-update-project-file)
-                       (cl-some (apply-partially 'locate-dominating-file
-                                                 default-directory)
-                                ctags-update-project-file)
-                     (locate-dominating-file default-directory
-                                             ctags-update-project-file)))
-         (project-root (or ctags-update-project-root
-                           (and tags-dir (file-name-as-directory tags-dir)))))
-    (or project-root
-        (progn (message ctags-update-no-project-msg)
-               nil))))
 
 (defsubst ctags-update-native-w32-p()
   (and (equal system-type 'windows-nt)
@@ -301,7 +294,7 @@ the command to update TAGS"
          ;; On Windows, "gtags d:/tmp" work, but "gtags d:/tmp/" doesn't
          (list (directory-file-name
                 (file-name-directory (or save-tagfile-to-as tagfile-full-path ))))
-       (list "."))))
+       (list project-root))))
   )
 
 (defun ctags-update-get-command(command command-args)
@@ -418,6 +411,66 @@ this return t if current buffer file name is TAGS."
               (set-process-query-on-exit-flag proc nil)
               (set-process-sentinel proc 'ctags-update-process-sentinel))))))))
 
+
+(defvar ctags-update-modified-projects (make-hash-table :test #'equal))
+(defvar ctags-update-auto-update-idle-timer)
+
+(defun ctags-update-update-project (project-root &optional force)
+  (message "ctags-update-update-project %s" project-root)
+  (let ((tags (expand-file-name ctags-update-tags-file-name project-root))
+        proc)
+    (when (or (file-exists-p tags)
+              force)
+      (when (get-process tags)          ;process name == tags
+        (user-error "Another ctags-update process is already running"))
+      (setq proc (apply 'start-process ;;
+                        tags " *ctags-update*"
+                        ctags-update-command
+                        (ctags-update-command-args tags (concat tags ".tmp"))))
+      (set-process-query-on-exit-flag proc nil)
+      (set-process-sentinel proc 'ctags-update-process-sentinel)
+      )
+    )
+  )
+
+(defun ctags-update-idle-update ()
+  (message "ctags-update-idle-update")
+  (let ((projects (hash-table-keys ctags-update-modified-projects)))
+    (cl-dolist (project projects)
+      (ctags-update-update-project project)
+      (remhash project ctags-update-modified-projects)
+      (when (not (current-idle-time))
+        (cl-return)
+        )
+      )))
+
+(defun ctags-update-initialize-idle-timer ()
+  "Initialize ctags-update idle timer."
+  (setq ctags-update-auto-update-idle-timer
+        (run-with-idle-timer ctags-update-auto-update-idle-duration t #'ctags-update-idle-update)))
+
+(defun ctags-update-stop-idle-timer ()
+  "Stop ctags-update idle timer if `ctags-update-auto-update-idle-timer' is set."
+  (when ctags-update-auto-update-idle-timer
+    (cancel-timer ctags-update-auto-update-idle-timer)))
+
+
+(defun ctags-update-initialize-auto-update ()
+  (ctags-update-initialize-idle-timer)
+  )
+
+(defun ctags-update-stop-auto-update ()
+  (ctags-update-stop-idle-timer)
+  )
+
+(defun ctags-update-save-modified-project ()
+  (let ((project-root (ctags-update-project-root)))
+    (when (and project-root
+               (not (string-equal (file-name-nondirectory (buffer-file-name)) ctags-update-tags-file-name))
+               )
+      (puthash project-root t ctags-update-modified-projects)))
+  )
+
 ;;;###autoload
 (define-minor-mode ctags-auto-update-mode
   "auto update TAGS using `exuberant-ctags' in parent directory."
@@ -427,8 +480,13 @@ this return t if current buffer file name is TAGS."
   :init-value nil
   :group 'ctags-update
   (if ctags-auto-update-mode
-      (add-hook 'after-save-hook 'ctags-update nil t)
-    (remove-hook 'after-save-hook 'ctags-update t)))
+      (progn
+        (add-hook 'after-save-hook 'ctags-update-save-modified-project nil t)
+        (ctags-update-initialize-auto-update)
+        )
+    (remove-hook 'after-save-hook 'ctags-update-save-modified-project t)
+    (ctags-update-stop-auto-update)
+    ))
 
 ;;;###autoload
 (defun turn-on-ctags-auto-update-mode()
