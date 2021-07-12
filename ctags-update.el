@@ -416,7 +416,7 @@ this return t if current buffer file name is TAGS."
 (defvar ctags-update-auto-update-idle-timer)
 
 (defun ctags-update-update-project (project-root &optional force)
-  (message "ctags-update-update-project %s" project-root)
+  ;; (message "ctags-update-update-project %s" project-root)
   (let ((tags (expand-file-name ctags-update-tags-file-name project-root))
         proc)
     (when (or (file-exists-p tags)
@@ -434,7 +434,7 @@ this return t if current buffer file name is TAGS."
   )
 
 (defun ctags-update-idle-update ()
-  (message "ctags-update-idle-update")
+  ;; (message "ctags-update-idle-update")
   (let ((projects (hash-table-keys ctags-update-modified-projects)))
     (cl-dolist (project projects)
       (ctags-update-update-project project)
